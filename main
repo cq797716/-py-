@@ -1,0 +1,763 @@
+import requests
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext, filedialog
+import json
+from urllib.parse import urlparse
+import sys
+import os
+from datetime import datetime
+from xml.etree import ElementTree as ET
+
+class BaiduSiteManager:
+    def __init__(self):
+        self.window = tk.Tk()
+        self.window.标题("百度收录提交工具[OE源码网-2oe.cn]")
+        # 调整窗口初始大小
+        self.window.geometry("1000x800")
+        # 设置窗口最小尺寸，防止组件显示不全
+        self.window.minsize(900, 700)
+        
+        # 设置整体样式
+        style = ttk.Style()
+        style.configure('TLabelframe', padding=8)
+        style.configure('TButton', padding=5)
+        style.configure('Treeview', rowheight=25)
+        
+        # 创建主框架并添加内边距
+        self.main_frame = ttk.Frame(self.window, padding="10")
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 站点信息区域
+        self.create_site_info_frame()
+        
+        # URL列表区域
+        self.create_url_list_frame()
+        
+        # 按钮区域
+        self.create_button_frame()
+        
+        # 状态显示区域
+        self.create_status_frame()
+        
+        # 绑定树形表格的选择事件
+        self.tree.bind('<<TreeviewSelect>>', self.on_select)
+        
+        # 在初始化时加载配置
+        self.load_config()
+        
+        # 定时保存配置
+        self.window.after(30000, self.auto_save_config)
+        
+        # 绑定窗口关闭事件
+        self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def create_site_info_frame(self):
+        info_frame = ttk.LabelFrame(self.main_frame, text="站点信息", padding="10")
+        info_frame.pack(fill=tk.X, pady=(0, 10))  # 增加底部间距
+        
+        # 创建网格布局的框架
+        grid_frame = ttk.Frame(info_frame)
+        grid_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 网站域名
+        ttk.标签(grid_frame, text="网站域名:", width=10).grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.domain_entry = ttk.Entry(grid_frame, width=50)
+        self.domain_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+        ttk.标签(grid_frame, text="(例如: https://2oe.cn)").grid(row=0, column=2, padx=5, sticky=tk.W)
+        
+        # Token
+        ttk.标签(grid_frame, text="Token:", width=10).grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.token_entry = ttk.Entry(grid_frame, width=50)
+        self.token_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        # Sitemap地址
+        ttk.标签(grid_frame, text="Sitemap:", width=10).grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.sitemap_entry = ttk.Entry(grid_frame, width=50)
+        self.sitemap_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        # 配额信息使用单独的框架
+        quota_frame = ttk.Frame(info_frame)
+        quota_frame.pack(fill=tk.X, padx=5, pady=(10, 5))
+        
+        self.normal_quota_label = ttk.标签(quota_frame, text="普通收录配额: 0")
+        self.normal_quota_label.pack(side=tk.LEFT, padx=(10, 20))
+        
+        self.fast_quota_label = ttk.标签(quota_frame, text="快速收录配额: 0")
+        self.fast_quota_label.pack(side=tk.LEFT, padx=(0, 20))
+        
+        ttk.标签(quota_frame, text="(配额每天0点重置)", foreground='gray').pack(side=tk.LEFT)
+
+    def create_url_list_frame(self):
+        list_frame = ttk.LabelFrame(self.main_frame, text="URL列表", padding="10")
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # 创建表格
+        columns = ('url', 'normal_status', 'fast_status', 'add_time')
+        self.tree = ttk.Treeview(list_frame, columns=columns, 显示='headings', selectmode='extended')
+        
+        # 设置列宽和对齐方式
+        self.tree.heading('url', text='URL')
+        self.tree.heading('normal_status', text='普通收录状态')
+        self.tree.heading('fast_status', text='快速收录状态')
+        self.tree.heading('add_time', text='添加时间')
+        
+        # 调整列宽比例
+        self.tree.column('url', width=500, minwidth=400)
+        self.tree.column('normal_status', width=120, minwidth=100, anchor='center')
+        self.tree.column('fast_status', width=120, minwidth=100, anchor='center')
+        self.tree.column('add_time', width=180, minwidth=150, anchor='center')
+        
+        # 添加水平和垂直滚动条
+        y_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        x_scrollbar = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
+        
+        # 使用网格布局来放置表格和滚动条
+        self.tree.grid(row=0, column=0, sticky='nsew')
+        y_scrollbar.grid(row=0, column=1, sticky='ns')
+        x_scrollbar.grid(row=1, column=0, sticky='ew')
+        
+        # 配置网格权重，使表格可以跟随窗口调整大小
+        list_frame.grid_rowconfigure(0, weight=1)
+        list_frame.grid_columnconfigure(0, weight=1)
+
+    def create_button_frame(self):
+        btn_frame = ttk.Frame(self.main_frame)
+        btn_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # 添加选择按钮组
+        select_frame = ttk.LabelFrame(btn_frame, text="批量选择", padding="10")
+        select_frame.pack(side=tk.LEFT, padx=(0, 10))
+        
+        ttk.Button(select_frame, text="全选", command=self.select_all, width=12).pack(side=tk.LEFT, padx=2)
+        ttk.Button(select_frame, text="取消全选", command=self.deselect_all, width=12).pack(side=tk.LEFT, padx=2)
+        ttk.Button(select_frame, text="反选", command=self.invert_selection, width=12).pack(side=tk.LEFT, padx=2)
+        
+        # 添加操作按钮组
+        action_frame = ttk.LabelFrame(btn_frame, text="操作", padding="10")
+        action_frame.pack(side=tk.LEFT)
+        
+        ttk.Button(action_frame, text="普通收录", command=lambda: self.submit_urls("normal"), width=12).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_frame, text="快速收录", command=lambda: self.submit_urls("fast"), width=12).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_frame, text="导入URL", command=self.import_urls, width=12).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_frame, text="导入Sitemap", command=self.import_from_sitemap, width=12).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_frame, text="清空URL", command=self.clear_urls, width=12).pack(side=tk.LEFT, padx=2)
+
+    def create_status_frame(self):
+        status_frame = ttk.LabelFrame(self.main_frame, text="状态信息", padding="10")
+        status_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 添加选择状态标签
+        self.selection_label = ttk.Label(status_frame, text="已选择: 0/0")
+        self.selection_label.pack(anchor=tk.W, pady=(0, 5))
+        
+        # 日志文本框
+        self.status_text = scrolledtext.ScrolledText(
+            status_frame, 
+            height=8,
+            font=('Courier New', 10),
+            wrap=tk.WORD
+        )
+        self.status_text.pack(fill=tk.BOTH, expand=True)
+
+    def submit_fast(self):
+        self.submit_urls("fast")
+
+    def submit_normal(self):
+        self.submit_urls("normal")
+
+    def submit_urls(self, submit_type):
+        """提交URL"""
+        if not self.check_input_valid():
+            return
+            
+        selected_items = self.tree.selection()
+        if not selected_items:
+            self.add_log("错误: 未选择要提交的URL")
+            messagebox.showinfo("提示", "请选择要提交的URL")
+            return
+            
+        domain = self.domain_entry.get().strip()
+        token = self.token_entry.get().strip()
+        api_url = f"http://data.zz.baidu.com/urls?site={domain}&token={token}"
+        
+        if submit_type == "fast":
+            api_url += "&type=daily"
+            
+        try:
+            urls = [self.tree.item(item)['values'][0] for item in selected_items]
+            
+            # 添加详细的开始日志
+            submit_type_text = "快速收录" if submit_type == "fast" else "普通收录"
+            self.add_log(f"{submit_type_text}-->开启{submit_type_text}线程...")
+            self.add_log(f"{submit_type_text}-->共有待推送的网页链接数 ：{len(urls)} 条!")
+            
+            # 添加请求头
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Content-Type': 'text/plain'
+            }
+            
+            # 获取CPU核心数
+            cpu_count = os.cpu_count() or 1
+            self.add_log(f"CPU核心数：{cpu_count}")
+            self.add_log("开启线程池，能一定程度加速")
+            
+            # 提交URL
+            response = requests.post(api_url, headers=headers, data='\n'.join(urls).encode())
+            
+            # 处理各种HTTP状态码
+            if response.status_code != 200:
+                error_msg = ""
+                if response.status_code == 400:
+                    error_msg = "提交失败: 请检查域名和Token是否正确"
+                elif response.status_code == 401:
+                    error_msg = "提交失败: Token无效或已过期"
+                elif response.status_code == 403:
+                    error_msg = "提交失败: 没有权限执行此操作"
+                elif response.status_code == 404:
+                    if submit_type == "fast":
+                        error_msg = "提交失败: 当前站点未开通快速收录权限，请先在百度站长平台开通快速收录功能"
+                    else:
+                        error_msg = "提交失败: 接口地址无效"
+                elif response.status_code == 429:
+                    error_msg = "提交失败: 请求过于频繁，请稍后重试"
+                elif response.status_code == 500:
+                    error_msg = "提交失败: 百度服务器内部错误"
+                else:
+                    error_msg = f"提交失败: HTTP错误 {response.status_code}"
+                
+                self.add_log(error_msg)
+                messagebox.showerror("错误", error_msg)
+                return
+                
+            try:
+                result = response.json()
+            except json.JSONDecodeError:
+                error_msg = "提交失败: 服务器返回的数据格式无效"
+                self.add_log(error_msg)
+                messagebox.showerror("错误", error_msg)
+                return
+            
+            # 检查错误信息
+            if 'error' in result:
+                error_msg = f"提交失败: {result.get('message', '未知错误')}"
+                if 'not_permitted' in result.get('message', ''):
+                    error_msg = "提交失败: 当前站点未开通快速收录权限，请先在百度站长平台开通快速收录功能"
+                self.add_log(error_msg)
+                messagebox.showerror("错误", error_msg)
+                return
+            
+            # 记录当前剩余配额
+            remain_quota = result.get('remain', 0)
+            success_count = result.get('success', 0)
+            
+            # 更新配额显示
+            if submit_type == "fast":
+                self.fast_quota_label.config(text=f"快速收录配额: {remain_quota}")
+            else:
+                self.normal_quota_label.config(text=f"普通收录配额: {remain_quota}")
+            
+            # 添加提交结果日志
+            self.add_log(f"{submit_type_text}-->成功推送: {success_count} 条")
+            self.add_log(f"{submit_type_text}-->当天剩余可推送url条数: {remain_quota} 条")
+            
+            # 记录每个URL的提交结果
+            for url in urls:
+                self.add_log(f"{submit_type_text}-->推送成功: {url}")
+            
+            if result.get('not_same_site'):
+                for url in result['not_same_site']:
+                    self.add_log(f"非本站URL: {url}")
+            if result.get('not_valid'):
+                for url in result['not_valid']:
+                    self.add_log(f"无效URL: {url}")
+            
+            # 更新表格状态
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            for item in selected_items:
+                values = list(self.tree.item(item)['values'])
+                if submit_type == "fast":
+                    values[2] = "已提交"
+                else:
+                    values[1] = "已提交"
+                values[3] = current_time
+                self.tree.item(item, values=values)
+                
+        except requests.exceptions.ConnectionError:
+            error_msg = "网络连接失败，请检查网络连接"
+            self.add_log(error_msg)
+            messagebox.showerror("错误", error_msg)
+        except requests.exceptions.Timeout:
+            error_msg = "请求超时，请稍后重试"
+            self.add_log(error_msg)
+            messagebox.showerror("错误", error_msg)
+        except json.JSONDecodeError:
+            error_msg = "服务器返回数据格式错误，请检查域名和Token是否匹配"
+            self.add_log(error_msg)
+            messagebox.showerror("错误", error_msg)
+        except Exception as e:
+            error_msg = f"提交失败: {str(e)}"
+            self.add_log(error_msg)
+            messagebox.showerror("错误", error_msg)
+
+    def update_sitemap(self):
+        sitemap_url = self.sitemap_entry.get().strip()
+        if not sitemap_url:
+            messagebox.showerror("错误", "请输入Sitemap地址!")
+            return
+            
+        try:
+            # 获取Sitemap内容
+            response = requests.get(sitemap_url)
+            if response.status_code != 200:
+                raise Exception(f"获取Sitemap失败，状态码: {response.status_code}")
+                
+            # 解析XML内容
+            root = ET.fromstring(response.content)
+            
+            # 查找所有URL
+            # 处理不同的命名空间情况
+            namespaces = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+            urls = []
+            
+            # 尝试查找<url><loc>标签
+            for url in root.findall('.//sm:url/sm:loc', namespaces):
+                urls.append(url.text)
+            
+            # 如果没找到，可能是sitemap index，尝试查找<sitemap><loc>标签
+            if not urls:
+                for url in root.findall('.//sm:sitemap/sm:loc', namespaces):
+                    urls.append(url.text)
+            
+            # 清空现有表格
+            for item in self.tree.get_children():
+                self.tree.删除(item)
+            
+            # 添加新的URL到表格
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            for url in urls:
+                self.tree.insert('', 'end', values=(url, "未提交", "未提交", current_time))
+            
+            self.add_log(f"成功从Sitemap更新了 {len(urls)} 个URL")
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"更新Sitemap失败: {str(e)}")
+
+    def save_config(self):
+        """保存配置"""
+        try:
+            config = {
+                'domain': self.domain_entry.get().strip(),
+                'token': self.token_entry.get().strip(),
+                'sitemap': self.sitemap_entry.get().strip(),
+                'urls': []
+            }
+            
+            # 保存URL列表
+            for item in self.tree.get_children():
+                values = self.tree.item(item)['values']
+                config['urls'].append({
+                    'url': values[0],
+                    'normal_status': values[1],
+                    'fast_status': values[2],
+                    'add_time': values[3]
+                })
+            
+            # 保存到文件
+            with 打开('baidu_site_config.json', 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
+            
+            self.add_log("配置已自动保存")
+            
+        except Exception as e:
+            self.add_log(f"保存配置失败: {str(e)}")
+
+    def load_config(self):
+        try:
+            config_file = 'baidu_site_config.json'
+            if not os.path.exists(config_file):
+                self.add_log("提示: 首次使用请填写站点信息")
+                return
+                
+            with 打开(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            # 恢复配置
+            self.domain_entry.删除(0, tk.END)
+            self.domain_entry.insert(0, config.get('domain', ''))
+            
+            self.token_entry.删除(0, tk.END)
+            self.token_entry.insert(0, config.get('token', ''))
+            
+            self.sitemap_entry.删除(0, tk.END)
+            self.sitemap_entry.insert(0, config.get('sitemap', ''))
+            
+            # 恢复URL列表
+            for item in self.tree.get_children():
+                self.tree.删除(item)
+                
+            for url_data in config.get('urls', []):
+                self.tree.insert('', 'end', values=(
+                    url_data['url'],
+                    url_data['normal_status'],
+                    url_data['fast_status'],
+                    url_data['add_time']
+                ))
+            
+            # 设置默认配额显示为0
+            self.normal_quota_label.config(text="普通收录配额: 0")
+            self.fast_quota_label.config(text="快速收录配额: 0")
+            
+            self.add_log("配置加载成功")
+                
+        except Exception as e:
+            self.add_log(f"提示: 加载配置失败: {str(e)}")
+
+    def select_all(self):
+        """全选所有URL"""
+        for item in self.tree.get_children():
+            self.tree.selection_add(item)
+        self.update_selection_status()
+
+    def deselect_all(self):
+        """取消所有选择"""
+        self.tree.selection_remove(*self.tree.selection())
+        self.update_selection_status()
+
+    def invert_selection(self):
+        """反选"""
+        all_items = self.tree.get_children()
+        selected_items = self.tree.selection()
+        
+        # 先取消当前选择
+        self.tree.selection_remove(*selected_items)
+        
+        # 选中之前未选中的项目
+        for item in all_items:
+            if item not in selected_items:
+                self.tree.selection_add(item)
+        
+        self.update_selection_status()
+
+    def update_selection_status(self):
+        """更新选择状态信息，不再每次选择都添加日志"""
+        total = len(self.tree.get_children())
+        selected = len(self.tree.selection())
+        # 更新状态栏显示选中数量，但不添加到日志
+        self.selection_label.config(text=f"已选择: {selected}/{total}")
+
+    def sort_treeview(self, col, reverse):
+        """排序功能"""
+        l = [(self.tree.set(k, col), k) for k in self.tree.get_children('')]
+        l.sort(reverse=reverse)
+        
+        # 重新排序
+        for index, (val, k) in enumerate(l):
+            self.tree.move(k, '', index)
+        
+        # 切换排序方向
+        self.tree.heading(col, command=lambda: self.sort_treeview(col, not reverse))
+
+    def reset_status(self):
+        """重置选中URL的收录状态"""
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showinfo("提示", "请选择要重置的URL")
+            return
+            
+        for item in selected_items:
+            values = list(self.tree.item(item)['values'])
+            values[1] = "未提交"  # 重置普通收录状态
+            values[2] = "未提交"  # 重置快速收录状态
+            self.tree.item(item, values=values)
+        
+        self.add_log(f"已重置 {len(selected_items)} 个URL的收录状态")
+
+    def clear_log(self):
+        """清空日志"""
+        self.status_text.delete(1.0, tk.END)
+
+    def add_log(self, message):
+        """添加日志"""
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # 添加固定宽度的时间戳和缩进
+        log_entry = f"{current_time}:    {message}\n"
+        self.status_text.insert(tk.END, log_entry)
+        self.status_text.see(tk.END)
+
+    def check_input_valid(self):
+        """检查输入是否有效"""
+        domain = self.domain_entry.get().strip()
+        token = self.token_entry.get().strip()
+        
+        if not domain:
+            self.add_log("提示: 请先填写网站域名")
+            messagebox.showinfo("提示", "请填写网站域名!")
+            return False
+            
+        if not token:
+            self.add_log("提示: 请先填写Token")
+            messagebox.showinfo("提示", "请填写Token!")
+            return False
+            
+        # 验证域名格式
+        try:
+            # 确保域名包含协议
+            if not domain.startswith(('http://', 'https://')):
+                domain = 'https://' + domain
+            
+            # 去除末尾的斜杠
+            domain = domain.rstrip('/')
+            
+            # 更新输入框中的域名
+            self.domain_entry.delete(0, tk.END)
+            self.domain_entry.insert(0, domain)
+            
+            # 简单验证域名格式
+            if not domain or '.' not in domain:
+                self.add_log("提示: 域名格式无效，请输入正确的域名(例如: https://example.com)")
+                messagebox.showinfo("提示", "域名格式无效!\n请输入正确的域名，例如: https://example.com")
+                return False
+                
+        except Exception:
+            self.add_log("提示: 域名格式解析失败")
+            messagebox.showinfo("提示", "域名格式无效!")
+            return False
+            
+        return True
+
+    def check_quota(self):
+        """检查当前配额"""
+        if not self.check_input_valid():
+            return
+            
+        domain = self.domain_entry.get().strip()
+        token = self.token_entry.get().strip()
+            
+        try:
+            # 检查普通收录配额
+            normal_url = f"http://data.zz.baidu.com/urls?site={domain}&token={token}"
+            
+            # 添加请求头
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Content-Type': 'text/plain'
+            }
+            
+            normal_response = requests.post(normal_url, headers=headers, data='')
+            
+            if normal_response.status_code == 400:
+                error_msg = "获取配额失败: 请检查域名和Token是否正确"
+                self.add_log(error_msg)
+                messagebox.showerror("错误", error_msg)
+                return
+            elif normal_response.status_code != 200:
+                error_msg = f"获取普通收录配额失败: HTTP {normal_response.status_code}"
+                self.add_log(error_msg)
+                messagebox.showerror("错误", error_msg)
+                return
+                
+            normal_result = normal_response.json()
+            
+            # 检查错误信息
+            if 'error' in normal_result:
+                error_msg = f"普通收录配额查询失败: {normal_result.get('message', '未知错误')}"
+                if 'not_same_site' in normal_result.get('message', ''):
+                    error_msg += "\n请确保填写的是已验证的站点域名"
+                self.add_log(error_msg)
+                messagebox.showerror("错误", error_msg)
+                return
+            
+            # 检查快速收录配额
+            fast_url = f"http://data.zz.baidu.com/urls?site={domain}&token={token}&type=daily"
+            fast_response = requests.post(fast_url, headers=headers, data='')
+            
+            if fast_response.status_code != 200:
+                error_msg = f"获取快速收录配额失败: HTTP {fast_response.status_code}"
+                self.add_log(error_msg)
+                messagebox.showerror("错误", error_msg)
+                return
+                
+            fast_result = fast_response.json()
+            
+            # 检查错误信息
+            if 'error' in fast_result:
+                error_msg = f"快速收录配额查询失败: {fast_result.get('message', '未知错误')}"
+                self.add_log(error_msg)
+                messagebox.showerror("错误", error_msg)
+                return
+            
+            # 更新显示
+            self.normal_quota_label.config(text=f"普通收录配额: {normal_result.get('remain', '未知')}")
+            self.fast_quota_label.config(text=f"快速收录配额: {fast_result.get('remain', '未知')}")
+            
+            self.add_log(f"配额查询成功 - 普通收录: {normal_result.get('remain', '未知')}, 快速收录: {fast_result.get('remain', '未知')}")
+            
+        except requests.exceptions.ConnectionError:
+            error_msg = "网络连接失败，请检查网络连接"
+            self.add_log(error_msg)
+            messagebox.showerror("错误", error_msg)
+        except requests.exceptions.Timeout:
+            error_msg = "请求超时，请稍后重试"
+            self.add_log(error_msg)
+            messagebox.showerror("错误", error_msg)
+        except json.JSONDecodeError:
+            error_msg = "服务器返回数据格式错误，请检查域名和Token是否匹配"
+            self.add_log(error_msg)
+            messagebox.showerror("错误", error_msg)
+        except Exception as e:
+            error_msg = f"获取配额失败: {str(e)}"
+            self.add_log(error_msg)
+            messagebox.showerror("错误", error_msg)
+
+    def import_urls(self):
+        """导入URL"""
+        # 选择文件类型
+        filetypes = [
+            ('文本文件', '*.txt'),
+            ('所有文件', '*.*')
+        ]
+        
+        # 打开文件选择对话框
+        filename = filedialog.askopenfilename(
+            title='选择URL文件',
+            filetypes=filetypes
+        )
+        
+        if not filename:
+            return
+            
+        try:
+            # 读取文件
+            with open(filename, 'r', encoding='utf-8') as f:
+                urls = f.readlines()
+            
+            # 处理URLs
+            valid_urls = []
+            for url in urls:
+                url = url.strip()
+                if url and url.startswith(('http://', 'https://')):
+                    valid_urls.append(url)
+            
+            if not valid_urls:
+                self.add_log("提示: 没有找到有效的URL")
+                messagebox.showinfo("提示", "文件中没有找到有效的URL!\n请确保每行一个URL，并以http://或https://开头")
+                return
+            
+            # 添加到表格
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            for url in valid_urls:
+                self.tree.insert('', 'end', values=(
+                    url,
+                    '未提交',
+                    '未提交',
+                    current_time
+                ))
+            
+            self.add_log(f"成功导入 {len(valid_urls)} 个URL")
+            messagebox.showinfo("成功", f"成功导入 {len(valid_urls)} 个URL")
+            
+            # 更新选择状态
+            self.update_selection_status()
+            
+        except UnicodeDecodeError:
+            self.add_log("错误: 文件编码不正确，请使用UTF-8编码")
+            messagebox.showerror("错误", "文件编码不正确!\n请使用UTF-8编码的文本文件")
+        except Exception as e:
+            self.add_log(f"导入失败: {str(e)}")
+            messagebox.showerror("错误", f"导入失败: {str(e)}")
+
+    def clear_urls(self):
+        """清空URL列表"""
+        if not self.tree.get_children():
+            self.add_log("提示: URL列表已经是空的")
+            messagebox.showinfo("提示", "URL列表已经是空的")
+            return
+            
+        if messagebox.askyesno("确认", "确定要清空所有URL吗?"):
+            for item in self.tree.get_children():
+                self.tree.delete(item)
+            self.add_log("已清空URL列表")
+            self.update_selection_status()
+
+    def on_select(self, event):
+        """选择事件处理"""
+        self.update_selection_status()
+
+    def auto_save_config(self):
+        """自动保存配置"""
+        self.save_config()
+        # 每30秒保存一次
+        self.window.after(30000, self.auto_save_config)
+
+    def on_closing(self):
+        """窗口关闭事件处理"""
+        self.save_config()
+        self.window.destroy()
+
+    def import_from_sitemap(self):
+        """从Sitemap导入URL"""
+        sitemap_url = self.sitemap_entry.get().strip()
+        if not sitemap_url:
+            self.add_log("错误: Sitemap地址为空")
+            messagebox.showinfo("提示", "请先填写Sitemap地址!")
+            return
+            
+        try:
+            # 添加请求头
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(sitemap_url, headers=headers, timeout=30)
+            response.raise_for_status()
+            
+            # 解析XML
+            root = ET.fromstring(response.content)
+            
+            # 提取URL
+            urls = []
+            for url in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
+                urls.append(url.text.strip())
+            
+            if not urls:
+                self.add_log("提示: Sitemap中没有找到URL")
+                messagebox.showinfo("提示", "Sitemap中没有找到URL!")
+                return
+            
+            # 添加到表格
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            for url in urls:
+                self.tree.insert('', 'end', values=(
+                    url,
+                    '未提交',
+                    '未提交',
+                    current_time
+                ))
+            
+            self.add_log(f"从Sitemap成功导入 {len(urls)} 个URL")
+            messagebox.showinfo("成功", f"成功导入 {len(urls)} 个URL")
+            
+            # 更新选择状态
+            self.update_selection_status()
+            
+        except requests.exceptions.RequestException as e:
+            error_msg = "下载Sitemap失败，请检查网络连接和URL是否正确"
+            self.add_log(error_msg)
+            messagebox.showerror("错误", error_msg)
+        except ET.ParseError:
+            error_msg = "解析Sitemap失败，请确保XML格式正确"
+            self.add_log(error_msg)
+            messagebox.showerror("错误", error_msg)
+        except Exception as e:
+            error_msg = f"导入失败: {str(e)}"
+            self.add_log(error_msg)
+            messagebox.showerror("错误", error_msg)
+
+    def run(self):
+        self.window.mainloop()
+
+if __name__ == "__main__":
+    app = BaiduSiteManager()
+    app.run()
